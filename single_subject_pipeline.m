@@ -2,7 +2,6 @@ function [output_pressure_file, parameters] = single_subject_pipeline(subject_id
     arguments
         subject_id 
         parameters struct
-        options.adopted_heatmap (:,:,:) = []
         options.sequential_configs struct = struct()
     end
 
@@ -282,8 +281,9 @@ function [output_pressure_file, parameters] = single_subject_pipeline(subject_id
     end
 
     % split temp_0 & absorption_fraction from kwave_medium (due to kwave checks)
-    if isfield(parameters, 'adopted_heatmap') && parameters.adopted_heatmap == 1
+    if isfield(parameters, 'adopted_heatmap') && parameters.adopted_heatmap == 1 && parameters.run_heating_sims == 1 && contains(parameters.simulation_medium, 'layered')
         heatmap_image = niftiread(parameters.adopted_heatmap);
+        fprintf('\nAdopting heatmap %s from previous simulation\n', parameters.adopted_heatmap)
         temp_0 = double(tformarray(heatmap_image, maketform("affine", final_transformation_matrix), ...
             makeresampler('nearest', 'fill'), [1 2 3], [1 2 3], size(medium_masks), [], 0));
     else
@@ -610,8 +610,10 @@ real_focal_distance = norm(highlighted_pos-trans_pos_final)*parameters.grid_step
                 time_status_seq, ...
                 heating_maxT, ...
                 heating_focal_planeT, ...
+                heating_endT, ...
                 heating_CEM43, ...
-                heating_focal_planeCEM43] = ...
+                heating_focal_planeCEM43, ...
+                heating_CEM43_end] = ...
                 run_heating_simulations(sensor_data, ...
                 kgrid, ...
                 kwave_medium, ...
@@ -625,14 +627,16 @@ real_focal_distance = norm(highlighted_pos-trans_pos_final)*parameters.grid_step
             % apply gather in case variables are GPU arrays
             heating_maxT = gather(heating_maxT);
             heating_focal_planeT = gather(heating_focal_planeT);
+            heating_endT = gather(heating_endT);
             heating_CEM43 = gather(heating_CEM43);
             heating_focal_planeCEM43 = gather(heating_focal_planeCEM43);
+            heating_CEM43_end = gather(heating_CEM43_end);
 
             if isfield(parameters, 'savemat') && parameters.savemat==1
                 disp("Not saving heating output matrices ...")
             else
                 save(filename_heating_data, 'kwaveDiffusion','time_status_seq',...
-                    'heating_window_dims','sensor','heating_maxT','heating_focal_planeT','heating_CEM43','heating_focal_planeCEM43','-v7.3');
+                    'heating_window_dims','sensor','heating_maxT','heating_focal_planeT','heating_endT','heating_CEM43','heating_focal_planeCEM43','heating_CEM43_end','-v7.3');
             end
             parameters.heating_available = 1;
         elseif exist(filename_heating_data, 'file')
@@ -660,7 +664,9 @@ real_focal_distance = norm(highlighted_pos-trans_pos_final)*parameters.grid_step
         output_table = readtable(output_pressure_file);
 
         output_table.maxT = max(heating_maxT, [], 'all');
+        output_table.endT = max(heating_endT, [], 'all');
         output_table.maxCEM43 = max(heating_CEM43, [], 'all');
+        output_table.maxCEM43end = max(heating_CEM43_end, [], 'all');
         % Overwrites the max temperature by dividing it up for each layer
         % in case a layered simulation_medium was selected
         if contains(parameters.simulation_medium, 'skull') || ...
@@ -669,12 +675,21 @@ real_focal_distance = norm(highlighted_pos-trans_pos_final)*parameters.grid_step
             output_table.maxT_brain = masked_max_3d(heating_maxT, mask_brain);
             output_table.maxT_skull = masked_max_3d(heating_maxT, mask_skull); 
             output_table.maxT_skin = masked_max_3d(heating_maxT, mask_skin);
+            output_table.endT_brain = masked_max_3d(heating_endT, mask_brain);
+            output_table.endT_skull = masked_max_3d(heating_endT, mask_skull); 
+            output_table.endT_skin = masked_max_3d(heating_endT, mask_skin);
             output_table.riseT_brain = masked_max_3d(heating_maxT, mask_brain)-parameters.thermal.temp_0.brain;
             output_table.riseT_skull = masked_max_3d(heating_maxT, mask_skull)-parameters.thermal.temp_0.skull; 
             output_table.riseT_skin = masked_max_3d(heating_maxT, mask_skin)-parameters.thermal.temp_0.skin;
+            output_table.rise_endT_brain = masked_max_3d(heating_endT, mask_brain)-parameters.thermal.temp_0.brain;
+            output_table.rise_endT_skull = masked_max_3d(heating_endT, mask_skull)-parameters.thermal.temp_0.skull; 
+            output_table.rise_endT_skin = masked_max_3d(heating_endT, mask_skin)-parameters.thermal.temp_0.skin;
             output_table.CEM43_brain = masked_max_3d(heating_CEM43, mask_brain);
             output_table.CEM43_skull = masked_max_3d(heating_CEM43, mask_skull); 
             output_table.CEM43_skin = masked_max_3d(heating_CEM43, mask_skin);
+            output_table.CEM43_end_brain = masked_max_3d(heating_CEM43_end, mask_brain);
+            output_table.CEM43_end_skull = masked_max_3d(heating_CEM43_end, mask_skull); 
+            output_table.CEM43_end_skin = masked_max_3d(heating_CEM43_end, mask_skin);
         end
         writetable(output_table, output_pressure_file);
 
@@ -755,7 +770,7 @@ real_focal_distance = norm(highlighted_pos-trans_pos_final)*parameters.grid_step
             data_types  = [data_types, "isppa","MI","pressure"];
         end
         if isfield(parameters, 'run_heating_sims') && parameters.run_heating_sims 
-            data_types  = [data_types, "heating", "heatrise", "CEM43"];
+            data_types  = [data_types, "heating", "heating_end", "heatrise", "heatrise_end", "CEM43", "CEM43_end"];
         end
         for data_type = data_types
             orig_file = fullfile(parameters.output_dir, sprintf('sub-%03d_final_%s_orig_coord%s',...
@@ -773,10 +788,16 @@ real_focal_distance = norm(highlighted_pos-trans_pos_final)*parameters.grid_step
                 data = medium_masks;
             elseif strcmp(data_type, "heating")
                 data = single(heating_maxT);
+            elseif strcmp(data_type, "heating_end")
+                data = single(heating_endT);
             elseif strcmp(data_type, "heatrise")
                 data = single(heating_maxT-kwave_medium.temp_0);
+            elseif strcmp(data_type, "heatrise_end")
+                data = single(heating_endT-kwave_medium.temp_0);
             elseif strcmp(data_type, "CEM43")
                 data = single(heating_CEM43);
+            elseif strcmp(data_type, "CEM43_end")
+                data = single(heating_CEM43_end);
             end
             orig_file_with_ext = strcat(orig_file, '.nii.gz');
     
@@ -820,7 +841,7 @@ real_focal_distance = norm(highlighted_pos-trans_pos_final)*parameters.grid_step
                             
                             data_backtransf(:,:,1:2)     = parameters.thermal.temp_0.water;  % First two planes in the 3rd dimension
                             data_backtransf(:,:,end-1:end) = parameters.thermal.temp_0.water;  % Last two planes in the 3rd dimension
-                        elseif strcmp(data_type, "CEM43")
+                        elseif strcmp(data_type, "CEM43") || strcmp(data_type, "CEM43_end")
                             % Removes edge artifacts
                             data_backtransf(data_backtransf <= 0) = 0.0000001;
                         end
@@ -924,15 +945,14 @@ real_focal_distance = norm(highlighted_pos-trans_pos_final)*parameters.grid_step
         sequential_configs = rmfield(sequential_configs, lowestField);
         % restore subject-specific path to original path if done earlier in this function
         sequential_parameters.adopted_heatmap = fullfile(parameters.output_dir, sprintf('sub-%03d_final_%s_orig_coord%s',...
-                subject_id, 'heating', parameters.results_filename_affix));
-        sequential_parameters.adopted_cumulative_heat = fullfile(parameters.output_dir, sprintf('sub-%03d_final_%s_orig_coord%s',...
-                subject_id, 'CEM43', parameters.results_filename_affix));
-        adopted_heatmap = ones(2,2,2);
+                subject_id, 'heating_end', parameters.results_filename_affix));
+        sequential_parameters.adopted_cem43 = fullfile(parameters.output_dir, sprintf('sub-%03d_final_%s_orig_coord%s',...
+                subject_id, 'CEM43_end', parameters.results_filename_affix));
         fprintf('Running subsequent heating simulation on %s\n', lowestField);
         if ~isempty(fieldnames(sequential_configs))
-            single_subject_pipeline_with_slurm(subject_id, sequential_parameters, false, '24:00:00', 64, 'adopted_heatmap', adopted_heatmap, 'sequential_configs', sequential_configs);
+            single_subject_pipeline_with_slurm(subject_id, sequential_parameters, false, '24:00:00', 64, 'sequential_configs', sequential_configs);
         else
-            single_subject_pipeline_with_slurm(subject_id, sequential_parameters, false, '24:00:00', 64, 'adopted_heatmap', adopted_heatmap);
+            single_subject_pipeline_with_slurm(subject_id, sequential_parameters, false, '24:00:00', 64);
         end
     end
 

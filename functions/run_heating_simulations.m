@@ -1,4 +1,4 @@
-function [thermal_diff_obj, time_status_seq, T_max, T_focal, CEM43_max, CEM43_focal] = ...
+function [thermal_diff_obj, time_status_seq, T_max, T_focal, T_cur, CEM43_max, CEM43_focal, CEM43_cur] = ...
     run_heating_simulations(sensor_data, kgrid, kwave_medium, sensor, source, parameters, trans_pos, final_transformation_matrix, medium_masks)
 
 % RUN_HEATING_SIMULATIONS Simulates thermal effects of ultrasound using k-Wave.
@@ -21,8 +21,11 @@ function [thermal_diff_obj, time_status_seq, T_max, T_focal, CEM43_max, CEM43_fo
 %   time_status_seq  - Struct array tracking the status of each time step (e.g., on/off).
 %   T_max            - Maximum temperature reached during the simulation.
 %   T_focal          - Temperature at the focal plane over time. [x,z,time]
+%   T_cur             - Temperature reached at the end of simulation or the optional cooling period.
 %   CEM43_max        - Maximum cumulative equivalent minutes at 43°C (CEM43) during the simulation.
 %   CEM43_focal      - CEM43 values at the focal plane over time. [x,z,time]
+%   CEM43_cur         - Maximum cumulative equivalent minutes at 43°C (CEM43) at the end of simulation or the optional cooling period.
+
 
 % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % % %
 % Notes:                                                            %
@@ -105,8 +108,9 @@ end
 T_max = thermal_diff_obj.T;
 
 % initialize field for cem43
-if isfield(parameters, 'adopted_cumulative_heat') && parameters.adopted_cumulative_heat == 1
-    cumulative_heat_image = niftiread(parameters.adopted_cumulative_heat);
+if isfield(parameters, 'adopted_cem43')
+    cumulative_heat_image = niftiread(parameters.adopted_cem43);
+    fprintf('\nAdopting CEM43 heatmap %s from previous simulation\n', parameters.adopted_cem43)
     thermal_diff_obj.cem43 = double(tformarray(cumulative_heat_image, ...
         maketform("affine", final_transformation_matrix), ...
         makeresampler('nearest', 'fill'), [1 2 3], [1 2 3], size(medium_masks), [], 0));
@@ -183,25 +187,25 @@ for trial_i = 1:parameters.thermal.n_trials
                  'step', num2cell(max([time_status_seq(:).step]) + (on_steps_n)), ...
                  'status', tmp_status,...
                  'recorded',1)];
-        curT = thermal_diff_obj.T;
+        T_cur = thermal_diff_obj.T;
         if isfield(parameters.thermal, 'cem43_iso') && parameters.thermal.cem43_iso == 1
-            curCEM43 = tmp_obj.cem43_iso;
+            CEM43_cur = tmp_obj.cem43_iso;
         else
-            curCEM43 = thermal_diff_obj.cem43;
+            CEM43_cur = thermal_diff_obj.cem43;
         end
         cur_timepoint = cur_timepoint+1;
         
         if ndims(T_max) == 3
-            T_focal(:,:,cur_timepoint) = squeeze(curT(:,trans_pos(2),:));
-            CEM43_focal(:,:,cur_timepoint) = squeeze(curCEM43(:,trans_pos(2),:));
+            T_focal(:,:,cur_timepoint) = squeeze(T_cur(:,trans_pos(2),:));
+            CEM43_focal(:,:,cur_timepoint) = squeeze(CEM43_cur(:,trans_pos(2),:));
         elseif ndims(T_max) == 2
-            T_focal(:,:,cur_timepoint) = squeeze(curT);
-            CEM43_focal(:,:,cur_timepoint) = squeeze(curCEM43);
+            T_focal(:,:,cur_timepoint) = squeeze(T_cur);
+            CEM43_focal(:,:,cur_timepoint) = squeeze(CEM43_cur);
         end
         
         % update T_max and CEM43_max where applicable
-        T_max = max(T_max, curT);
-        CEM43_max = max(CEM43_max, curCEM43);
+        T_max = max(T_max, T_cur);
+        CEM43_max = max(CEM43_max, CEM43_cur);
         
         % Pulse off 
         if off_steps_n>0
@@ -219,18 +223,18 @@ for trial_i = 1:parameters.thermal.n_trials
               'status', "off",...
               'recorded',1)];
             cur_timepoint = cur_timepoint+1;
-            curT = thermal_diff_obj.T;
+            T_cur = thermal_diff_obj.T;
             if isfield(parameters.thermal, 'cem43_iso') && parameters.thermal.cem43_iso == 1
-                curCEM43 = tmp_obj.cem43_iso;
+                CEM43_cur = tmp_obj.cem43_iso;
             else
-                curCEM43 = thermal_diff_obj.cem43;
+                CEM43_cur = thermal_diff_obj.cem43;
             end
             if ndims(T_max) == 3
-                T_focal(:,:,cur_timepoint) = squeeze(curT(:,trans_pos(2),:));
-                CEM43_focal(:,:,cur_timepoint) = squeeze(curCEM43(:,trans_pos(2),:));
+                T_focal(:,:,cur_timepoint) = squeeze(T_cur(:,trans_pos(2),:));
+                CEM43_focal(:,:,cur_timepoint) = squeeze(CEM43_cur(:,trans_pos(2),:));
             elseif ndims(T_max) == 2
-                T_focal(:,:,cur_timepoint) = squeeze(curT);
-                CEM43_focal(:,:,cur_timepoint) = squeeze(curCEM43);
+                T_focal(:,:,cur_timepoint) = squeeze(T_cur);
+                CEM43_focal(:,:,cur_timepoint) = squeeze(CEM43_cur);
             end
         end
     end
@@ -252,18 +256,18 @@ if post_stim_step_n > 0
       'status', "off",...
       'recorded',1)];
     cur_timepoint = cur_timepoint+1;
-    curT = thermal_diff_obj.T;
+    T_cur = thermal_diff_obj.T;
     if isfield(parameters.thermal, 'cem43_iso') && parameters.thermal.cem43_iso == 1
-        curCEM43 = tmp_obj.cem43_iso;
+        CEM43_cur = tmp_obj.cem43_iso;
     else
-        curCEM43 = thermal_diff_obj.cem43;
+        CEM43_cur = thermal_diff_obj.cem43;
     end
     if ndims(T_max) == 3
-        T_focal(:,:,cur_timepoint) = squeeze(curT(:,trans_pos(2),:));
-        CEM43_focal(:,:,cur_timepoint) = squeeze(curCEM43(:,trans_pos(2),:));
+        T_focal(:,:,cur_timepoint) = squeeze(T_cur(:,trans_pos(2),:));
+        CEM43_focal(:,:,cur_timepoint) = squeeze(CEM43_cur(:,trans_pos(2),:));
     elseif ndims(T_max) == 2
-        T_focal(:,:,cur_timepoint) = squeeze(curT);
-        CEM43_focal(:,:,cur_timepoint) = squeeze(curCEM43);
+        T_focal(:,:,cur_timepoint) = squeeze(T_cur);
+        CEM43_focal(:,:,cur_timepoint) = squeeze(CEM43_cur);
     end
 end
 
