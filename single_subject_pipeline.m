@@ -281,7 +281,7 @@ function [output_pressure_file, parameters] = single_subject_pipeline(subject_id
     end
 
     % split temp_0 & absorption_fraction from kwave_medium (due to kwave checks)
-    if isfield(parameters, 'adopted_heatmap') && parameters.adopted_heatmap == 1 && parameters.run_heating_sims == 1 && contains(parameters.simulation_medium, 'layered')
+    if isfield(parameters, 'adopted_heatmap') && isfile(parameters.adopted_heatmap) && parameters.run_heating_sims == 1 && contains(parameters.simulation_medium, 'layered')
         heatmap_image = niftiread(parameters.adopted_heatmap);
         fprintf('\nAdopting heatmap %s from previous simulation\n', parameters.adopted_heatmap)
         temp_0 = double(tformarray(heatmap_image, maketform("affine", final_transformation_matrix), ...
